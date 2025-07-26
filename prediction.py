@@ -18,10 +18,11 @@ from datetime import datetime
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*InconsistentVersionWarning.*")
 
-# Define feature names for consistency
+# Define feature names to match exactly what the trained model expects
+# Based on the error message, the model expects these exact capitalized names
 FEATURE_NAMES = [
-    'ph', 'hardness', 'solids', 'chloramines', 'sulfate',
-    'conductivity', 'organic_carbon', 'trihalomethanes', 'turbidity'
+    'Ph', 'Hardness', 'Solids', 'Chloramines', 'Sulfate',
+    'Conductivity', 'Organic_carbon', 'Trihalomethanes', 'Turbidity'
 ]
 
 # Global variables to store loaded model and scaler
@@ -51,6 +52,11 @@ def load_model_once():
             
             model_loaded = True
             print("✅ Model and scaler loaded successfully")
+            
+            # Debug: Print model feature names if available
+            if hasattr(loaded_model, 'feature_names_in_'):
+                print(f"🔍 Model expects features: {list(loaded_model.feature_names_in_)}")
+            
             return loaded_model, loaded_scaler
         else:
             print("❌ No model file found")
@@ -78,24 +84,28 @@ except ImportError:
             if model is None:
                 raise Exception("No model available")
             
-            # Create DataFrame with proper feature names to avoid warnings
-            input_data = pd.DataFrame({
-                'ph': [ph],
-                'hardness': [hardness], 
-                'solids': [solids],
-                'chloramines': [chloramines],
-                'sulfate': [sulfate],
-                'conductivity': [conductivity],
-                'organic_carbon': [organic_carbon],
-                'trihalomethanes': [trihalomethanes],
-                'turbidity': [turbidity]
-            })
+            # Get the exact feature names the model expects
+            if hasattr(model, 'feature_names_in_'):
+                expected_features = list(model.feature_names_in_)
+                print(f"🔍 Using model feature names: {expected_features}")
+            else:
+                # Fallback to our defined names
+                expected_features = FEATURE_NAMES
+                print(f"🔍 Using fallback feature names: {expected_features}")
+            
+            # Create input array in the same order as expected features
+            input_values = [ph, hardness, solids, chloramines, sulfate,
+                          conductivity, organic_carbon, trihalomethanes, turbidity]
+            
+            # Create DataFrame with exact feature names from model
+            input_data = pd.DataFrame([input_values], columns=expected_features)
             
             # Apply scaling if available
             if scaler is not None:
-                # Convert to numpy array for scaler, then back to DataFrame
+                # For scaler, we might need to use numpy array
                 scaled_data = scaler.transform(input_data.values)
-                input_data = pd.DataFrame(scaled_data, columns=FEATURE_NAMES)
+                # Create new DataFrame with scaled data but same column names
+                input_data = pd.DataFrame(scaled_data, columns=expected_features)
             
             # Make prediction with proper feature names
             prediction = model.predict(input_data)[0]
@@ -150,7 +160,8 @@ except ImportError:
                 'model_info': {
                     'model_type': type(model).__name__ if model else 'Unknown',
                     'standardization_used': scaler is not None,
-                    'feature_names_used': True
+                    'feature_names_used': True,
+                    'expected_features': expected_features
                 }
             }
             
@@ -199,6 +210,7 @@ class ModelInfo(BaseModel):
     model_type: str = Field(default="RandomForestRegressor", description="Type of ML model used")
     standardization_used: bool = Field(default=False, description="Whether features were standardized")
     feature_names_used: bool = Field(default=True, description="Whether proper feature names were used")
+    expected_features: Optional[List[str]] = Field(default=None, description="Feature names expected by model")
 
 class PredictionResponse(BaseModel):
     success: bool
@@ -350,6 +362,10 @@ async def get_model_info():
                 "feature_names": FEATURE_NAMES,
                 "n_features": len(FEATURE_NAMES)
             }
+            
+            # Add actual model feature names if available
+            if hasattr(model, 'feature_names_in_'):
+                model_info['model_feature_names'] = list(model.feature_names_in_)
             
             # Add model-specific info if available
             if hasattr(model, 'n_estimators'):
