@@ -1,860 +1,483 @@
-<<<<<<< HEAD
-# This script uses the best trained model to make predictions for API deployment
-# Compatible with FastAPI and ready for web service integration
+# This API uses the best-performing model from Task 1 to make water potability predictions
+# Ready for deployment on Render with public URL and Swagger UI
 
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, validator
+from typing import Optional, Dict, Any, List
 import numpy as np
 import pandas as pd
 import joblib
 import json
-from typing import Dict, Union, List
 import os
-import warnings
-warnings.filterwarnings('ignore')
+import uvicorn
+from datetime import datetime
 
-class WaterPotabilityPredictor:
-    """
-    Water Potability Prediction Class for API Integration
-    Uses the best trained model to predict water safety based on quality parameters
-    """
+# Import the prediction function from our script
+try:
+    from prediction_script import predict_water_potability_api, WaterPotabilityPredictor
+    print("✅ Prediction script imported successfully")
+except ImportError:
+    print("⚠️ Warning: prediction_script.py not found. Using fallback prediction function.")
     
-    def __init__(self, model_path: str = None, scaler_path: str = None, metadata_path: str = None):
-        """
-        Initialize the predictor with trained model and scaler
-        
-        Args:
-            model_path: Path to the saved best model (.pkl file)
-            scaler_path: Path to the saved scaler (.pkl file) - required for Linear Regression
-            metadata_path: Path to the model metadata (.json file)
-        """
-        self.model = None
-        self.scaler = None
-        self.metadata = None
-        self.model_name = None
-        self.feature_names = None
-        
-        # Load model and associated files
-        self._load_model_files(model_path, scaler_path, metadata_path)
-        
-        # Define realistic constraints for water quality parameters
-        self.constraints = {
-            'ph': (0.0, 14.0),
-            'hardness': (0.0, 500.0),
-            'solids': (0.0, 50000.0),
-            'chloramines': (0.0, 15.0),
-            'sulfate': (0.0, 500.0),
-            'conductivity': (0.0, 2000.0),
-            'organic_carbon': (0.0, 30.0),
-            'trihalomethanes': (0.0, 200.0),
-            'turbidity': (0.0, 10.0)
-        }
-        
-        # WHO and EPA standards for reference
-        self.who_standards = {
-            'ph': (6.5, 8.5),
-            'hardness': (0, 120),  # soft water
-            'solids': (0, 1000),
-            'chloramines': (0, 5),
-            'sulfate': (0, 250),
-            'conductivity': (50, 1500),
-            'organic_carbon': (0, 2),
-            'trihalomethanes': (0, 100),
-            'turbidity': (0, 1)
-        }
-    
-    def _load_model_files(self, model_path: str, scaler_path: str, metadata_path: str):
-        """Load the trained model, scaler, and metadata"""
-        
-        # Try to find files automatically if not provided
-        if not model_path:
-            # Look for model files in current directory
+    # Fallback prediction function if script is not available
+    def predict_water_potability_api(ph, hardness, solids, chloramines, sulfate, 
+                                    conductivity, organic_carbon, trihalomethanes, turbidity):
+        # Load model and make prediction (basic implementation)
+        try:
+            # Try to load the best model
             model_files = [f for f in os.listdir('.') if f.startswith('best_model_') and f.endswith('.pkl')]
             if model_files:
-                model_path = model_files[0]
-                print(f"✅ Found model file: {model_path}")
-            else:
-                raise FileNotFoundError("No model file found. Please provide model_path.")
-        
-        if not scaler_path:
-            scaler_files = [f for f in os.listdir('.') if f.startswith('feature_scaler') and f.endswith('.pkl')]
-            if scaler_files:
-                scaler_path = scaler_files[0]
-                print(f"✅ Found scaler file: {scaler_path}")
-        
-        if not metadata_path:
-            metadata_files = [f for f in os.listdir('.') if f.startswith('model_metadata') and f.endswith('.json')]
-            if metadata_files:
-                metadata_path = metadata_files[0]
-                print(f"✅ Found metadata file: {metadata_path}")
-        
-        # Load model
-        try:
-            self.model = joblib.load(model_path)
-            print(f"✅ Model loaded successfully from: {model_path}")
-        except Exception as e:
-            raise Exception(f"Error loading model: {str(e)}")
-        
-        # Load scaler (if exists)
-        if scaler_path and os.path.exists(scaler_path):
-            try:
-                self.scaler = joblib.load(scaler_path)
-                print(f"✅ Scaler loaded successfully from: {scaler_path}")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not load scaler: {str(e)}")
-        
-        # Load metadata (if exists)
-        if metadata_path and os.path.exists(metadata_path):
-            try:
-                with open(metadata_path, 'r') as f:
-                    self.metadata = json.load(f)
-                self.model_name = self.metadata.get('best_model_name', 'Unknown')
-                self.feature_names = self.metadata.get('feature_names', [])
-                print(f"✅ Metadata loaded successfully from: {metadata_path}")
-                print(f"✅ Best model type: {self.model_name}")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not load metadata: {str(e)}")
-    
-    def validate_input(self, input_data: Dict[str, float]) -> Dict[str, Union[bool, str, List[str]]]:
-        """
-        Validate input data against realistic constraints
-        
-        Args:
-            input_data: Dictionary containing water quality parameters
-            
-        Returns:
-            Dictionary with validation results
-        """
-        validation_result = {
-            'is_valid': True,
-            'errors': [],
-            'warnings': []
-        }
-        
-        # Check required parameters
-        required_params = ['ph', 'hardness', 'solids', 'chloramines', 'sulfate', 
-                          'conductivity', 'organic_carbon', 'trihalomethanes', 'turbidity']
-        
-        for param in required_params:
-            if param not in input_data:
-                validation_result['is_valid'] = False
-                validation_result['errors'].append(f"Missing required parameter: {param}")
-        
-        # Check constraints
-        for param, value in input_data.items():
-            if param in self.constraints:
-                min_val, max_val = self.constraints[param]
-                if not (min_val <= value <= max_val):
-                    validation_result['is_valid'] = False
-                    validation_result['errors'].append(
-                        f"{param} value {value} is outside valid range [{min_val}, {max_val}]"
-                    )
+                model = joblib.load(model_files[0])
                 
-                # Check WHO standards (warnings only)
-                if param in self.who_standards:
-                    who_min, who_max = self.who_standards[param]
-                    if not (who_min <= value <= who_max):
-                        validation_result['warnings'].append(
-                            f"{param} value {value} is outside WHO recommended range [{who_min}, {who_max}]"
-                        )
-        
-        return validation_result
-    
-    def predict_single(self, ph: float, hardness: float, solids: float, 
-                      chloramines: float, sulfate: float, conductivity: float,
-                      organic_carbon: float, trihalomethanes: float, turbidity: float) -> Dict:
-        """
-        Make a single prediction for water potability
-        
-        Args:
-            ph: pH level (0-14)
-            hardness: Water hardness in mg/L (0-500)
-            solids: Total dissolved solids in ppm (0-50000)
-            chloramines: Chloramines amount in ppm (0-15)
-            sulfate: Sulfate amount in mg/L (0-500)
-            conductivity: Electrical conductivity in μS/cm (0-2000)
-            organic_carbon: Organic carbon amount in ppm (0-30)
-            trihalomethanes: Trihalomethanes amount in μg/L (0-200)
-            turbidity: Turbidity level in NTU (0-10)
-            
-        Returns:
-            Dictionary with prediction results
-        """
-        
-        # Prepare input data
-        input_data = {
-            'ph': ph,
-            'hardness': hardness,
-            'solids': solids,
-            'chloramines': chloramines,
-            'sulfate': sulfate,
-            'conductivity': conductivity,
-            'organic_carbon': organic_carbon,
-            'trihalomethanes': trihalomethanes,
-            'turbidity': turbidity
-        }
-        
-        # Validate input
-        validation = self.validate_input(input_data)
-        if not validation['is_valid']:
-            return {
-                'success': False,
-                'error': 'Input validation failed',
-                'details': validation['errors'],
-                'warnings': validation.get('warnings', [])
-            }
-        
-        try:
-            # Prepare input array
-            input_array = np.array([[ph, hardness, solids, chloramines, sulfate, 
-                                   conductivity, organic_carbon, trihalomethanes, turbidity]])
-            
-            # Apply scaling if required (for Linear Regression)
-            if self.scaler is not None and self.model_name == 'Linear Regression':
-                input_array = self.scaler.transform(input_array)
-            
-            # Make prediction
-            prediction = self.model.predict(input_array)[0]
-            
-            # Ensure prediction is between 0 and 1
-            prediction = np.clip(prediction, 0, 1)
-            
-            # Determine potability status
-            is_potable = prediction > 0.5
-            confidence = prediction if is_potable else (1 - prediction)
-            
-            # Risk assessment
-            risk_level = self._assess_risk(prediction)
-            
-            # Generate recommendation
-            recommendation = self._generate_recommendation(input_data, prediction, validation.get('warnings', []))
-            
-            return {
-                'success': True,
-                'prediction': {
-                    'potability_score': float(prediction),
-                    'is_potable': bool(is_potable),
-                    'confidence': float(confidence),
-                    'risk_level': risk_level,
-                    'status': 'POTABLE' if is_potable else 'NOT POTABLE'
-                },
-                'recommendation': recommendation,
-                'warnings': validation.get('warnings', []),
-                'model_info': {
-                    'model_type': self.model_name,
-                    'standardization_used': self.scaler is not None
+                # Try to load scaler if available
+                scaler = None
+                scaler_files = [f for f in os.listdir('.') if f.startswith('feature_scaler') and f.endswith('.pkl')]
+                if scaler_files:
+                    scaler = joblib.load(scaler_files[0])
+                
+                # Prepare input
+                input_data = np.array([[ph, hardness, solids, chloramines, sulfate, 
+                                      conductivity, organic_carbon, trihalomethanes, turbidity]])
+                
+                # Apply scaling if available
+                if scaler is not None:
+                    input_data = scaler.transform(input_data)
+                
+                # Make prediction
+                prediction = model.predict(input_data)[0]
+                prediction = np.clip(prediction, 0, 1)
+                
+                return {
+                    'success': True,
+                    'prediction': {
+                        'potability_score': float(prediction),
+                        'is_potable': bool(prediction > 0.5),
+                        'confidence': float(prediction if prediction > 0.5 else 1 - prediction),
+                        'status': 'POTABLE' if prediction > 0.5 else 'NOT POTABLE'
+                    }
                 }
-            }
-            
+            else:
+                raise Exception("No model file found")
+                
         except Exception as e:
             return {
                 'success': False,
-                'error': f'Prediction failed: {str(e)}',
-                'details': []
+                'error': f'Prediction failed: {str(e)}'
             }
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Water Potability Prediction API",
+    description="AI-powered water quality assessment API using machine learning to predict water potability based on chemical and physical parameters",
+    version="1.0.0",
+    docs_url="/docs",  # Swagger UI URL
+    redoc_url="/redoc"
+)
+
+# Add CORS middleware (MANDATORY REQUIREMENT)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# ================== NEW CODE ==================
+# Updated response models
+class PredictionOutput(BaseModel):
+    potability_score: float = Field(..., ge=0.0, le=1.0, description="Prediction score between 0-1")
+    is_potable: bool = Field(..., description="Whether water is safe to drink")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Model confidence in prediction")
+    risk_level: str = Field(..., description="LOW/MODERATE/HIGH/VERY_HIGH")
+    status: str = Field(..., description="POTABLE or NOT POTABLE")
+
+class ModelInfo(BaseModel):
+    model_type: str = Field(default="Random Forest", description="Type of ML model used")
+    standardization_used: bool = Field(default=False, description="Whether features were standardized")
+
+class PredictionResponse(BaseModel):
+    success: bool
+    prediction: Optional[PredictionOutput] = None
+    recommendation: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+    model_info: ModelInfo = Field(default_factory=ModelInfo)
+    error: Optional[str] = None
+    details: Optional[List[str]] = None
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+# ================== END NEW CODE ==================
+
+# Pydantic BaseModel for input validation with data types and range constraints
+class WaterQualityInput(BaseModel):
+    """
+    Water Quality Input Model with enforced data types and range constraints
+    All parameters are based on WHO and EPA standards for water quality
+    """
     
-    def predict_batch(self, input_list: List[Dict[str, float]]) -> List[Dict]:
-        """
-        Make predictions for multiple water samples
+    ph: float = Field(
+        ...,
+        ge=0.0,
+        le=14.0,
+        description="pH level of water (0-14, optimal: 6.5-8.5)"
+    )
+    
+    hardness: float = Field(
+        ...,
+        ge=0.0,
+        le=500.0,
+        description="Water hardness in mg/L (0-500, soft: <60, hard: >120)"
+    )
+    
+    solids: float = Field(
+        ...,
+        ge=0.0,
+        le=50000.0,
+        description="Total dissolved solids in ppm (0-50000, WHO limit: <1000)"
+    )
+    
+    chloramines: float = Field(
+        ...,
+        ge=0.0,
+        le=15.0,
+        description="Chloramines amount in ppm (0-15, WHO limit: <5)"
+    )
+    
+    sulfate: float = Field(
+        ...,
+        ge=0.0,
+        le=500.0,
+        description="Sulfate amount in mg/L (0-500, WHO limit: <250)"
+    )
+    
+    conductivity: float = Field(
+        ...,
+        ge=0.0,
+        le=2000.0,
+        description="Electrical conductivity in μS/cm (0-2000, typical: 50-1500)"
+    )
+    
+    organic_carbon: float = Field(
+        ...,
+        ge=0.0,
+        le=30.0,
+        description="Organic carbon amount in ppm (0-30, typical: <2)"
+    )
+    
+    trihalomethanes: float = Field(
+        ...,
+        ge=0.0,
+        le=200.0,
+        description="Trihalomethanes amount in μg/L (0-200, WHO limit: <100)"
+    )
+    
+    turbidity: float = Field(
+        ...,
+        ge=0.0,
+        le=10.0,
+        description="Turbidity level in NTU (0-10, WHO limit: <1)"
+    )
+    
+    # Custom validators for additional constraints
+    @validator('ph')
+    def validate_ph(cls, v):
+        if not (0.0 <= v <= 14.0):
+            raise ValueError('pH must be between 0 and 14')
+        return v
+    
+    @validator('hardness')
+    def validate_hardness(cls, v):
+        if v < 0:
+            raise ValueError('Hardness cannot be negative')
+        return v
+    
+    @validator('solids')
+    def validate_solids(cls, v):
+        if v < 0:
+            raise ValueError('Total dissolved solids cannot be negative')
+        return v
+    
+    @validator('chloramines')
+    def validate_chloramines(cls, v):
+        if v < 0:
+            raise ValueError('Chloramines cannot be negative')
+        return v
+    
+    @validator('sulfate')
+    def validate_sulfate(cls, v):
+        if v < 0:
+            raise ValueError('Sulfate cannot be negative')
+        return v
+    
+    @validator('conductivity')
+    def validate_conductivity(cls, v):
+        if v < 0:
+            raise ValueError('Conductivity cannot be negative')
+        return v
+    
+    @validator('organic_carbon')
+    def validate_organic_carbon(cls, v):
+        if v < 0:
+            raise ValueError('Organic carbon cannot be negative')
+        return v
+    
+    @validator('trihalomethanes')
+    def validate_trihalomethanes(cls, v):
+        if v < 0:
+            raise ValueError('Trihalomethanes cannot be negative')
+        return v
+    
+    @validator('turbidity')
+    def validate_turbidity(cls, v):
+        if v < 0:
+            raise ValueError('Turbidity cannot be negative')
+        return v
+
+# Health check endpoint
+@app.get("/")
+async def root():
+    """Root endpoint for health check"""
+    return {
+        "message": "Water Potability Prediction API",
+        "status": "active",
+        "version": "1.0.0",
+        "docs_url": "/docs",
+        "health_check": "OK"
+    }
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "Water Potability Prediction API"
+    }
+
+# Main prediction endpoint (POST request as required)
+@app.post("/predict", response_model=PredictionResponse)
+async def predict_water_potability(input_data: WaterQualityInput):
+    """
+    Predict water potability based on water quality parameters
+    
+    This endpoint uses the best-performing model from Task 1 to predict
+    whether water is safe for human consumption based on 9 chemical and
+    physical parameters.
+    """
+    
+    try:
+        # Make prediction using the best model from Task 1
+        result = predict_water_potability_api(
+            ph=input_data.ph,
+            hardness=input_data.hardness,
+            solids=input_data.solids,
+            chloramines=input_data.chloramines,
+            sulfate=input_data.sulfate,
+            conductivity=input_data.conductivity,
+            organic_carbon=input_data.organic_carbon,
+            trihalomethanes=input_data.trihalomethanes,
+            turbidity=input_data.turbidity
+        )
         
-        Args:
-            input_list: List of dictionaries containing water quality parameters
+        if result['success']:
+            return PredictionResponse(
+                success=True,
+                prediction=PredictionOutput(**result['prediction']),
+                recommendation=result.get('recommendation', 'No recommendation available'),
+                warnings=result.get('warnings', []),
+                model_info=ModelInfo(**result.get('model_info', {}))
+            )
+        else:
+            return PredictionResponse(
+                success=False,
+                error=result.get('error', 'Unknown error'),
+                details=result.get('details', [])
+            )
             
-        Returns:
-            List of prediction results
-        """
+    except Exception as e:
+        return PredictionResponse(
+            success=False,
+            error=f"Internal server error: {str(e)}",
+            details=["Prediction processing failed"]
+        )
+
+# Batch prediction endpoint (bonus feature)
+@app.post("/predict/batch")
+async def predict_batch(input_list: list[WaterQualityInput]):
+    """
+    Predict water potability for multiple samples
+    
+    This endpoint allows batch processing of multiple water samples
+    for efficiency in processing large datasets.
+    """
+    
+    try:
         results = []
         
         for i, input_data in enumerate(input_list):
-            try:
-                result = self.predict_single(**input_data)
-                result['sample_id'] = i
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    'sample_id': i,
-                    'success': False,
-                    'error': f'Prediction failed for sample {i}: {str(e)}'
-                })
+            result = predict_water_potability_api(
+                ph=input_data.ph,
+                hardness=input_data.hardness,
+                solids=input_data.solids,
+                chloramines=input_data.chloramines,
+                sulfate=input_data.sulfate,
+                conductivity=input_data.conductivity,
+                organic_carbon=input_data.organic_carbon,
+                trihalomethanes=input_data.trihalomethanes,
+                turbidity=input_data.turbidity
+            )
+            
+            result['sample_id'] = i
+            results.append(result)
         
-        return results
-    
-    def _assess_risk(self, prediction: float) -> str:
-        """Assess risk level based on prediction score"""
-        if prediction >= 0.8:
-            return 'LOW'
-        elif prediction >= 0.6:
-            return 'MODERATE'
-        elif prediction >= 0.4:
-            return 'HIGH'
-        else:
-            return 'VERY HIGH'
-    
-    def _generate_recommendation(self, input_data: Dict, prediction: float, warnings: List[str]) -> str:
-        """Generate recommendation based on prediction and input parameters"""
-        
-        if prediction > 0.7:
-            base_rec = "Water quality appears safe for consumption."
-        elif prediction > 0.5:
-            base_rec = "Water quality is marginally acceptable but consider additional treatment."
-        elif prediction > 0.3:
-            base_rec = "Water quality is poor and requires treatment before consumption."
-        else:
-            base_rec = "Water quality is unsafe and should not be consumed without extensive treatment."
-        
-        # Add specific recommendations based on warnings
-        if warnings:
-            base_rec += f" Note: {len(warnings)} parameter(s) outside WHO recommendations."
-        
-        return base_rec
-    
-    def get_model_info(self) -> Dict:
-        """Get information about the loaded model"""
         return {
-            'model_type': self.model_name,
-            'has_scaler': self.scaler is not None,
-            'feature_names': self.feature_names,
-            'constraints': self.constraints,
-            'who_standards': self.who_standards,
-            'metadata': self.metadata
+            "success": True,
+            "results": results,
+            "total_samples": len(input_list),
+            "timestamp": datetime.now().isoformat()
         }
-
-# Convenience function for direct API integration
-def predict_water_potability_api(ph: float, hardness: float, solids: float, 
-                                chloramines: float, sulfate: float, conductivity: float,
-                                organic_carbon: float, trihalomethanes: float, 
-                                turbidity: float) -> Dict:
-    """
-    Direct prediction function for API integration
-    This is the main function that will be used in Task 2 FastAPI
-    """
-    
-    # Initialize predictor (will auto-load model files)
-    predictor = WaterPotabilityPredictor()
-    
-    # Make prediction
-    result = predictor.predict_single(
-        ph=ph,
-        hardness=hardness,
-        solids=solids,
-        chloramines=chloramines,
-        sulfate=sulfate,
-        conductivity=conductivity,
-        organic_carbon=organic_carbon,
-        trihalomethanes=trihalomethanes,
-        turbidity=turbidity
-    )
-    
-    return result
-
-# Test function to verify the script works
-def test_prediction_script():
-    """Test the prediction script with sample data"""
-    
-    print("🧪 Testing Water Potability Prediction Script")
-    print("=" * 50)
-    
-    # Test data - sample water quality parameters
-    test_samples = [
-        {
-            'ph': 7.0,
-            'hardness': 150.0,
-            'solids': 25000.0,
-            'chloramines': 8.0,
-            'sulfate': 250.0,
-            'conductivity': 400.0,
-            'organic_carbon': 15.0,
-            'trihalomethanes': 80.0,
-            'turbidity': 4.0
-        },
-        {
-            'ph': 6.5,
-            'hardness': 100.0,
-            'solids': 15000.0,
-            'chloramines': 4.0,
-            'sulfate': 150.0,
-            'conductivity': 300.0,
-            'organic_carbon': 10.0,
-            'trihalomethanes': 50.0,
-            'turbidity': 2.0
-        }
-    ]
-    
-    try:
-        # Initialize predictor
-        predictor = WaterPotabilityPredictor()
-        
-        # Test single predictions
-        for i, sample in enumerate(test_samples):
-            print(f"\n📊 Test Sample {i+1}:")
-            print(f"Input: {sample}")
-            
-            result = predictor.predict_single(**sample)
-            
-            if result['success']:
-                pred = result['prediction']
-                print(f"✅ Prediction: {pred['potability_score']:.4f}")
-                print(f"✅ Status: {pred['status']}")
-                print(f"✅ Confidence: {pred['confidence']:.4f}")
-                print(f"✅ Risk Level: {pred['risk_level']}")
-                print(f"✅ Recommendation: {result['recommendation']}")
-            else:
-                print(f"❌ Error: {result['error']}")
-        
-        # Test batch prediction
-        print(f"\n📊 Batch Prediction Test:")
-        batch_results = predictor.predict_batch(test_samples)
-        for result in batch_results:
-            if result['success']:
-                pred = result['prediction']
-                print(f"Sample {result['sample_id']}: {pred['status']} (Score: {pred['potability_score']:.3f})")
-            else:
-                print(f"Sample {result['sample_id']}: ERROR - {result['error']}")
-        
-        # Test API function
-        print(f"\n📊 API Function Test:")
-        api_result = predict_water_potability_api(**test_samples[0])
-        if api_result['success']:
-            print(f"✅ API Function works correctly")
-            print(f"✅ Result: {api_result['prediction']['status']}")
-        else:
-            print(f"❌ API Function failed: {api_result['error']}")
-        
-        print(f"\n🎉 All tests completed successfully!")
-        print(f"✅ Script is ready for Task 2 (FastAPI integration)")
         
     except Exception as e:
-        print(f"❌ Test failed: {str(e)}")
-        print(f"⚠️ Make sure model files are available in the current directory")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Batch prediction failed: {str(e)}"
+        )
 
-if __name__ == "__main__":
-    # Run tests when script is executed directly
-=======
-# This script uses the best trained model to make predictions for API deployment
-# Compatible with FastAPI and ready for web service integration
-
-import numpy as np
-import pandas as pd
-import joblib
-import json
-from typing import Dict, Union, List
-import os
-import warnings
-warnings.filterwarnings('ignore')
-
-class WaterPotabilityPredictor:
-    """
-    Water Potability Prediction Class for API Integration
-    Uses the best trained model to predict water safety based on quality parameters
-    """
-    
-    def __init__(self, model_path: str = None, scaler_path: str = None, metadata_path: str = None):
-        """
-        Initialize the predictor with trained model and scaler
-        
-        Args:
-            model_path: Path to the saved best model (.pkl file)
-            scaler_path: Path to the saved scaler (.pkl file) - required for Linear Regression
-            metadata_path: Path to the model metadata (.json file)
-        """
-        self.model = None
-        self.scaler = None
-        self.metadata = None
-        self.model_name = None
-        self.feature_names = None
-        
-        # Load model and associated files
-        self._load_model_files(model_path, scaler_path, metadata_path)
-        
-        # Define realistic constraints for water quality parameters
-        self.constraints = {
-            'ph': (0.0, 14.0),
-            'hardness': (0.0, 500.0),
-            'solids': (0.0, 50000.0),
-            'chloramines': (0.0, 15.0),
-            'sulfate': (0.0, 500.0),
-            'conductivity': (0.0, 2000.0),
-            'organic_carbon': (0.0, 30.0),
-            'trihalomethanes': (0.0, 200.0),
-            'turbidity': (0.0, 10.0)
-        }
-        
-        # WHO and EPA standards for reference
-        self.who_standards = {
-            'ph': (6.5, 8.5),
-            'hardness': (0, 120),  # soft water
-            'solids': (0, 1000),
-            'chloramines': (0, 5),
-            'sulfate': (0, 250),
-            'conductivity': (50, 1500),
-            'organic_carbon': (0, 2),
-            'trihalomethanes': (0, 100),
-            'turbidity': (0, 1)
-        }
-    
-    def _load_model_files(self, model_path: str, scaler_path: str, metadata_path: str):
-        """Load the trained model, scaler, and metadata"""
-        
-        # Try to find files automatically if not provided
-        if not model_path:
-            # Look for model files in current directory
-            model_files = [f for f in os.listdir('.') if f.startswith('best_model_') and f.endswith('.pkl')]
-            if model_files:
-                model_path = model_files[0]
-                print(f"✅ Found model file: {model_path}")
-            else:
-                raise FileNotFoundError("No model file found. Please provide model_path.")
-        
-        if not scaler_path:
-            scaler_files = [f for f in os.listdir('.') if f.startswith('feature_scaler') and f.endswith('.pkl')]
-            if scaler_files:
-                scaler_path = scaler_files[0]
-                print(f"✅ Found scaler file: {scaler_path}")
-        
-        if not metadata_path:
-            metadata_files = [f for f in os.listdir('.') if f.startswith('model_metadata') and f.endswith('.json')]
-            if metadata_files:
-                metadata_path = metadata_files[0]
-                print(f"✅ Found metadata file: {metadata_path}")
-        
-        # Load model
-        try:
-            self.model = joblib.load(model_path)
-            print(f"✅ Model loaded successfully from: {model_path}")
-        except Exception as e:
-            raise Exception(f"Error loading model: {str(e)}")
-        
-        # Load scaler (if exists)
-        if scaler_path and os.path.exists(scaler_path):
-            try:
-                self.scaler = joblib.load(scaler_path)
-                print(f"✅ Scaler loaded successfully from: {scaler_path}")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not load scaler: {str(e)}")
-        
-        # Load metadata (if exists)
-        if metadata_path and os.path.exists(metadata_path):
-            try:
-                with open(metadata_path, 'r') as f:
-                    self.metadata = json.load(f)
-                self.model_name = self.metadata.get('best_model_name', 'Unknown')
-                self.feature_names = self.metadata.get('feature_names', [])
-                print(f"✅ Metadata loaded successfully from: {metadata_path}")
-                print(f"✅ Best model type: {self.model_name}")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not load metadata: {str(e)}")
-    
-    def validate_input(self, input_data: Dict[str, float]) -> Dict[str, Union[bool, str, List[str]]]:
-        """
-        Validate input data against realistic constraints
-        
-        Args:
-            input_data: Dictionary containing water quality parameters
-            
-        Returns:
-            Dictionary with validation results
-        """
-        validation_result = {
-            'is_valid': True,
-            'errors': [],
-            'warnings': []
-        }
-        
-        # Check required parameters
-        required_params = ['ph', 'hardness', 'solids', 'chloramines', 'sulfate', 
-                          'conductivity', 'organic_carbon', 'trihalomethanes', 'turbidity']
-        
-        for param in required_params:
-            if param not in input_data:
-                validation_result['is_valid'] = False
-                validation_result['errors'].append(f"Missing required parameter: {param}")
-        
-        # Check constraints
-        for param, value in input_data.items():
-            if param in self.constraints:
-                min_val, max_val = self.constraints[param]
-                if not (min_val <= value <= max_val):
-                    validation_result['is_valid'] = False
-                    validation_result['errors'].append(
-                        f"{param} value {value} is outside valid range [{min_val}, {max_val}]"
-                    )
-                
-                # Check WHO standards (warnings only)
-                if param in self.who_standards:
-                    who_min, who_max = self.who_standards[param]
-                    if not (who_min <= value <= who_max):
-                        validation_result['warnings'].append(
-                            f"{param} value {value} is outside WHO recommended range [{who_min}, {who_max}]"
-                        )
-        
-        return validation_result
-    
-    def predict_single(self, ph: float, hardness: float, solids: float, 
-                      chloramines: float, sulfate: float, conductivity: float,
-                      organic_carbon: float, trihalomethanes: float, turbidity: float) -> Dict:
-        """
-        Make a single prediction for water potability
-        
-        Args:
-            ph: pH level (0-14)
-            hardness: Water hardness in mg/L (0-500)
-            solids: Total dissolved solids in ppm (0-50000)
-            chloramines: Chloramines amount in ppm (0-15)
-            sulfate: Sulfate amount in mg/L (0-500)
-            conductivity: Electrical conductivity in μS/cm (0-2000)
-            organic_carbon: Organic carbon amount in ppm (0-30)
-            trihalomethanes: Trihalomethanes amount in μg/L (0-200)
-            turbidity: Turbidity level in NTU (0-10)
-            
-        Returns:
-            Dictionary with prediction results
-        """
-        
-        # Prepare input data
-        input_data = {
-            'ph': ph,
-            'hardness': hardness,
-            'solids': solids,
-            'chloramines': chloramines,
-            'sulfate': sulfate,
-            'conductivity': conductivity,
-            'organic_carbon': organic_carbon,
-            'trihalomethanes': trihalomethanes,
-            'turbidity': turbidity
-        }
-        
-        # Validate input
-        validation = self.validate_input(input_data)
-        if not validation['is_valid']:
-            return {
-                'success': False,
-                'error': 'Input validation failed',
-                'details': validation['errors'],
-                'warnings': validation.get('warnings', [])
-            }
-        
-        try:
-            # Prepare input array
-            input_array = np.array([[ph, hardness, solids, chloramines, sulfate, 
-                                   conductivity, organic_carbon, trihalomethanes, turbidity]])
-            
-            # Apply scaling if required (for Linear Regression)
-            if self.scaler is not None and self.model_name == 'Linear Regression':
-                input_array = self.scaler.transform(input_array)
-            
-            # Make prediction
-            prediction = self.model.predict(input_array)[0]
-            
-            # Ensure prediction is between 0 and 1
-            prediction = np.clip(prediction, 0, 1)
-            
-            # Determine potability status
-            is_potable = prediction > 0.5
-            confidence = prediction if is_potable else (1 - prediction)
-            
-            # Risk assessment
-            risk_level = self._assess_risk(prediction)
-            
-            # Generate recommendation
-            recommendation = self._generate_recommendation(input_data, prediction, validation.get('warnings', []))
-            
-            return {
-                'success': True,
-                'prediction': {
-                    'potability_score': float(prediction),
-                    'is_potable': bool(is_potable),
-                    'confidence': float(confidence),
-                    'risk_level': risk_level,
-                    'status': 'POTABLE' if is_potable else 'NOT POTABLE'
-                },
-                'recommendation': recommendation,
-                'warnings': validation.get('warnings', []),
-                'model_info': {
-                    'model_type': self.model_name,
-                    'standardization_used': self.scaler is not None
-                }
-            }
-            
-        except Exception as e:
-            return {
-                'success': False,
-                'error': f'Prediction failed: {str(e)}',
-                'details': []
-            }
-    
-    def predict_batch(self, input_list: List[Dict[str, float]]) -> List[Dict]:
-        """
-        Make predictions for multiple water samples
-        
-        Args:
-            input_list: List of dictionaries containing water quality parameters
-            
-        Returns:
-            List of prediction results
-        """
-        results = []
-        
-        for i, input_data in enumerate(input_list):
-            try:
-                result = self.predict_single(**input_data)
-                result['sample_id'] = i
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    'sample_id': i,
-                    'success': False,
-                    'error': f'Prediction failed for sample {i}: {str(e)}'
-                })
-        
-        return results
-    
-    def _assess_risk(self, prediction: float) -> str:
-        """Assess risk level based on prediction score"""
-        if prediction >= 0.8:
-            return 'LOW'
-        elif prediction >= 0.6:
-            return 'MODERATE'
-        elif prediction >= 0.4:
-            return 'HIGH'
-        else:
-            return 'VERY HIGH'
-    
-    def _generate_recommendation(self, input_data: Dict, prediction: float, warnings: List[str]) -> str:
-        """Generate recommendation based on prediction and input parameters"""
-        
-        if prediction > 0.7:
-            base_rec = "Water quality appears safe for consumption."
-        elif prediction > 0.5:
-            base_rec = "Water quality is marginally acceptable but consider additional treatment."
-        elif prediction > 0.3:
-            base_rec = "Water quality is poor and requires treatment before consumption."
-        else:
-            base_rec = "Water quality is unsafe and should not be consumed without extensive treatment."
-        
-        # Add specific recommendations based on warnings
-        if warnings:
-            base_rec += f" Note: {len(warnings)} parameter(s) outside WHO recommendations."
-        
-        return base_rec
-    
-    def get_model_info(self) -> Dict:
-        """Get information about the loaded model"""
-        return {
-            'model_type': self.model_name,
-            'has_scaler': self.scaler is not None,
-            'feature_names': self.feature_names,
-            'constraints': self.constraints,
-            'who_standards': self.who_standards,
-            'metadata': self.metadata
-        }
-
-# Convenience function for direct API integration
-def predict_water_potability_api(ph: float, hardness: float, solids: float, 
-                                chloramines: float, sulfate: float, conductivity: float,
-                                organic_carbon: float, trihalomethanes: float, 
-                                turbidity: float) -> Dict:
-    """
-    Direct prediction function for API integration
-    This is the main function that will be used in Task 2 FastAPI
-    """
-    
-    # Initialize predictor (will auto-load model files)
-    predictor = WaterPotabilityPredictor()
-    
-    # Make prediction
-    result = predictor.predict_single(
-        ph=ph,
-        hardness=hardness,
-        solids=solids,
-        chloramines=chloramines,
-        sulfate=sulfate,
-        conductivity=conductivity,
-        organic_carbon=organic_carbon,
-        trihalomethanes=trihalomethanes,
-        turbidity=turbidity
-    )
-    
-    return result
-
-# Test function to verify the script works
-def test_prediction_script():
-    """Test the prediction script with sample data"""
-    
-    print("🧪 Testing Water Potability Prediction Script")
-    print("=" * 50)
-    
-    # Test data - sample water quality parameters
-    test_samples = [
-        {
-            'ph': 7.0,
-            'hardness': 150.0,
-            'solids': 25000.0,
-            'chloramines': 8.0,
-            'sulfate': 250.0,
-            'conductivity': 400.0,
-            'organic_carbon': 15.0,
-            'trihalomethanes': 80.0,
-            'turbidity': 4.0
-        },
-        {
-            'ph': 6.5,
-            'hardness': 100.0,
-            'solids': 15000.0,
-            'chloramines': 4.0,
-            'sulfate': 150.0,
-            'conductivity': 300.0,
-            'organic_carbon': 10.0,
-            'trihalomethanes': 50.0,
-            'turbidity': 2.0
-        }
-    ]
+# Model information endpoint
+@app.get("/model/info")
+async def get_model_info():
+    """Get information about the loaded model"""
     
     try:
-        # Initialize predictor
+        # Try to get model info from predictor
         predictor = WaterPotabilityPredictor()
+        model_info = predictor.get_model_info()
         
-        # Test single predictions
-        for i, sample in enumerate(test_samples):
-            print(f"\n📊 Test Sample {i+1}:")
-            print(f"Input: {sample}")
-            
-            result = predictor.predict_single(**sample)
-            
-            if result['success']:
-                pred = result['prediction']
-                print(f"✅ Prediction: {pred['potability_score']:.4f}")
-                print(f"✅ Status: {pred['status']}")
-                print(f"✅ Confidence: {pred['confidence']:.4f}")
-                print(f"✅ Risk Level: {pred['risk_level']}")
-                print(f"✅ Recommendation: {result['recommendation']}")
-            else:
-                print(f"❌ Error: {result['error']}")
-        
-        # Test batch prediction
-        print(f"\n📊 Batch Prediction Test:")
-        batch_results = predictor.predict_batch(test_samples)
-        for result in batch_results:
-            if result['success']:
-                pred = result['prediction']
-                print(f"Sample {result['sample_id']}: {pred['status']} (Score: {pred['potability_score']:.3f})")
-            else:
-                print(f"Sample {result['sample_id']}: ERROR - {result['error']}")
-        
-        # Test API function
-        print(f"\n📊 API Function Test:")
-        api_result = predict_water_potability_api(**test_samples[0])
-        if api_result['success']:
-            print(f"✅ API Function works correctly")
-            print(f"✅ Result: {api_result['prediction']['status']}")
-        else:
-            print(f"❌ API Function failed: {api_result['error']}")
-        
-        print(f"\n🎉 All tests completed successfully!")
-        print(f"✅ Script is ready for Task 2 (FastAPI integration)")
+        return {
+            "success": True,
+            "model_info": model_info,
+            "timestamp": datetime.now().isoformat()
+        }
         
     except Exception as e:
-        print(f"❌ Test failed: {str(e)}")
-        print(f"⚠️ Make sure model files are available in the current directory")
+        return {
+            "success": False,
+            "error": f"Could not retrieve model info: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
 
+# Parameters information endpoint
+@app.get("/parameters/info")
+async def get_parameters_info():
+    """Get information about water quality parameters and their acceptable ranges"""
+    
+    parameters_info = {
+        "ph": {
+            "name": "pH Level",
+            "unit": "pH scale",
+            "range": [0.0, 14.0],
+            "optimal": [6.5, 8.5],
+            "description": "Measure of acidity or alkalinity of water"
+        },
+        "hardness": {
+            "name": "Water Hardness",
+            "unit": "mg/L",
+            "range": [0.0, 500.0],
+            "optimal": [0, 120],
+            "description": "Concentration of calcium and magnesium ions"
+        },
+        "solids": {
+            "name": "Total Dissolved Solids",
+            "unit": "ppm",
+            "range": [0.0, 50000.0],
+            "optimal": [0, 1000],
+            "description": "Total amount of dissolved minerals and salts"
+        },
+        "chloramines": {
+            "name": "Chloramines",
+            "unit": "ppm",
+            "range": [0.0, 15.0],
+            "optimal": [0, 5],
+            "description": "Chemical compounds used for water disinfection"
+        },
+        "sulfate": {
+            "name": "Sulfate",
+            "unit": "mg/L",
+            "range": [0.0, 500.0],
+            "optimal": [0, 250],
+            "description": "Naturally occurring salt in water"
+        },
+        "conductivity": {
+            "name": "Electrical Conductivity",
+            "unit": "μS/cm",
+            "range": [0.0, 2000.0],
+            "optimal": [50, 1500],
+            "description": "Ability of water to conduct electric current"
+        },
+        "organic_carbon": {
+            "name": "Organic Carbon",
+            "unit": "ppm",
+            "range": [0.0, 30.0],
+            "optimal": [0, 2],
+            "description": "Amount of organic matter in water"
+        },
+        "trihalomethanes": {
+            "name": "Trihalomethanes",
+            "unit": "μg/L",
+            "range": [0.0, 200.0],
+            "optimal": [0, 100],
+            "description": "Chemical compounds formed during water treatment"
+        },
+        "turbidity": {
+            "name": "Turbidity",
+            "unit": "NTU",
+            "range": [0.0, 10.0],
+            "optimal": [0, 1],
+            "description": "Measure of water clarity"
+        }
+    }
+    
+    return {
+        "success": True,
+        "parameters": parameters_info,
+        "note": "Optimal ranges are based on WHO and EPA standards",
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Example usage endpoint
+@app.get("/example")
+async def get_example():
+    """Get example input data for testing the API"""
+    
+    example_data = {
+        "ph": 7.0,
+        "hardness": 150.0,
+        "solids": 25000.0,
+        "chloramines": 8.0,
+        "sulfate": 250.0,
+        "conductivity": 400.0,
+        "organic_carbon": 15.0,
+        "trihalomethanes": 80.0,
+        "turbidity": 4.0
+    }
+    
+    return {
+        "success": True,
+        "example_input": example_data,
+        "note": "Copy this data to test the /predict endpoint",
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Main entry point for running the server
 if __name__ == "__main__":
-    # Run tests when script is executed directly
->>>>>>> 2628288cf6a61e67f56d1ea3b487aaab5ee35b93
-    test_prediction_script()
+    # Configuration for deployment
+    port = int(os.environ.get("PORT", 8000))
+    
+    uvicorn.run(
+        "prediction:app",  # module:app
+        host="0.0.0.0",
+        port=port,
+        reload=False,  # Set to False for production
+        access_log=True
+    )
