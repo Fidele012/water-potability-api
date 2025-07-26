@@ -1,7 +1,7 @@
 fastapi==0.95.0
 uvicorn[standard]==0.21.0
 pydantic==1.10.7
-numpy>=1.26.0  # Updated to a newer stable version
+numpy>=1.26.4  # Updated to a newer stable version
 pandas==1.5.3
 scikit-learn==1.2.2
 joblib==1.2.0
