@@ -48,13 +48,58 @@ except ImportError:
                 prediction = model.predict(input_data)[0]
                 prediction = np.clip(prediction, 0, 1)
                 
+                # FIXED: Calculate risk_level based on prediction score
+                def get_risk_level(score):
+                    if score >= 0.8:
+                        return "LOW"
+                    elif score >= 0.6:
+                        return "MODERATE" 
+                    elif score >= 0.4:
+                        return "HIGH"
+                    else:
+                        return "VERY_HIGH"
+                
+                # FIXED: Generate recommendations based on parameters
+                recommendations = []
+                warnings = []
+                
+                # Check parameter ranges and add warnings/recommendations
+                if ph < 6.5 or ph > 8.5:
+                    warnings.append(f"pH level ({ph:.2f}) is outside optimal range (6.5-8.5)")
+                    recommendations.append("Consider pH adjustment treatment")
+                
+                if solids > 1000:
+                    warnings.append(f"Total dissolved solids ({solids:.2f} ppm) exceeds WHO limit (1000 ppm)")
+                    recommendations.append("Reverse osmosis or distillation recommended")
+                
+                if chloramines > 5:
+                    warnings.append(f"Chloramines level ({chloramines:.2f} ppm) exceeds WHO limit (5 ppm)")
+                    recommendations.append("Activated carbon filtration recommended")
+                
+                if turbidity > 1:
+                    warnings.append(f"Turbidity ({turbidity:.2f} NTU) exceeds WHO limit (1 NTU)")
+                    recommendations.append("Filtration or coagulation treatment needed")
+                
+                if trihalomethanes > 100:
+                    warnings.append(f"Trihalomethanes ({trihalomethanes:.2f} μg/L) exceed WHO limit (100 μg/L)")
+                    recommendations.append("Activated carbon treatment recommended")
+                
+                recommendation_text = "; ".join(recommendations) if recommendations else "Water parameters are within acceptable ranges"
+                
                 return {
                     'success': True,
                     'prediction': {
                         'potability_score': float(prediction),
                         'is_potable': bool(prediction > 0.5),
                         'confidence': float(prediction if prediction > 0.5 else 1 - prediction),
+                        'risk_level': get_risk_level(prediction),  # FIXED: Added missing risk_level
                         'status': 'POTABLE' if prediction > 0.5 else 'NOT POTABLE'
+                    },
+                    'recommendation': recommendation_text,
+                    'warnings': warnings,
+                    'model_info': {
+                        'model_type': 'Random Forest',
+                        'standardization_used': scaler is not None
                     }
                 }
             else:
@@ -63,7 +108,8 @@ except ImportError:
         except Exception as e:
             return {
                 'success': False,
-                'error': f'Prediction failed: {str(e)}'
+                'error': f'Prediction failed: {str(e)}',
+                'details': ['Model loading or prediction processing failed']
             }
 
 # Initialize FastAPI app
