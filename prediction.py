@@ -11,100 +11,149 @@ import joblib
 import json
 import os
 import uvicorn
+import warnings
 from datetime import datetime
+
+# Suppress scikit-learn warnings for cleaner logs
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*InconsistentVersionWarning.*")
+
+# Define feature names for consistency
+FEATURE_NAMES = [
+    'ph', 'hardness', 'solids', 'chloramines', 'sulfate',
+    'conductivity', 'organic_carbon', 'trihalomethanes', 'turbidity'
+]
+
+# Global variables to store loaded model and scaler
+loaded_model = None
+loaded_scaler = None
+model_loaded = False
+
+def load_model_once():
+    """Load model and scaler once at startup to avoid repeated loading"""
+    global loaded_model, loaded_scaler, model_loaded
+    
+    if model_loaded:
+        return loaded_model, loaded_scaler
+    
+    try:
+        # Try to load the best model
+        model_files = [f for f in os.listdir('.') if f.startswith('best_model_') and f.endswith('.pkl')]
+        if model_files:
+            print(f"✅ Loading model: {model_files[0]}")
+            loaded_model = joblib.load(model_files[0])
+            
+            # Try to load scaler if available
+            scaler_files = [f for f in os.listdir('.') if f.startswith('feature_scaler') and f.endswith('.pkl')]
+            if scaler_files:
+                print(f"✅ Loading scaler: {scaler_files[0]}")
+                loaded_scaler = joblib.load(scaler_files[0])
+            
+            model_loaded = True
+            print("✅ Model and scaler loaded successfully")
+            return loaded_model, loaded_scaler
+        else:
+            print("❌ No model file found")
+            return None, None
+            
+    except Exception as e:
+        print(f"❌ Error loading model: {str(e)}")
+        return None, None
 
 # Import the prediction function from our script
 try:
     from prediction_script import predict_water_potability_api, WaterPotabilityPredictor
     print("✅ Prediction script imported successfully")
 except ImportError:
-    print("⚠️ Warning: prediction_script.py not found. Using fallback prediction function.")
+    print("⚠️ Using enhanced fallback prediction function")
     
-    # Fallback prediction function if script is not available
+    # Enhanced fallback prediction function
     def predict_water_potability_api(ph, hardness, solids, chloramines, sulfate, 
                                     conductivity, organic_carbon, trihalomethanes, turbidity):
-        # Load model and make prediction (basic implementation)
+        """Enhanced fallback prediction function with proper feature handling"""
+        
         try:
-            # Try to load the best model
-            model_files = [f for f in os.listdir('.') if f.startswith('best_model_') and f.endswith('.pkl')]
-            if model_files:
-                model = joblib.load(model_files[0])
-                
-                # Try to load scaler if available
-                scaler = None
-                scaler_files = [f for f in os.listdir('.') if f.startswith('feature_scaler') and f.endswith('.pkl')]
-                if scaler_files:
-                    scaler = joblib.load(scaler_files[0])
-                
-                # Prepare input
-                input_data = np.array([[ph, hardness, solids, chloramines, sulfate, 
-                                      conductivity, organic_carbon, trihalomethanes, turbidity]])
-                
-                # Apply scaling if available
-                if scaler is not None:
-                    input_data = scaler.transform(input_data)
-                
-                # Make prediction
-                prediction = model.predict(input_data)[0]
-                prediction = np.clip(prediction, 0, 1)
-                
-                # FIXED: Calculate risk_level based on prediction score
-                def get_risk_level(score):
-                    if score >= 0.8:
-                        return "LOW"
-                    elif score >= 0.6:
-                        return "MODERATE" 
-                    elif score >= 0.4:
-                        return "HIGH"
-                    else:
-                        return "VERY_HIGH"
-                
-                # FIXED: Generate recommendations based on parameters
-                recommendations = []
-                warnings = []
-                
-                # Check parameter ranges and add warnings/recommendations
-                if ph < 6.5 or ph > 8.5:
-                    warnings.append(f"pH level ({ph:.2f}) is outside optimal range (6.5-8.5)")
-                    recommendations.append("Consider pH adjustment treatment")
-                
-                if solids > 1000:
-                    warnings.append(f"Total dissolved solids ({solids:.2f} ppm) exceeds WHO limit (1000 ppm)")
-                    recommendations.append("Reverse osmosis or distillation recommended")
-                
-                if chloramines > 5:
-                    warnings.append(f"Chloramines level ({chloramines:.2f} ppm) exceeds WHO limit (5 ppm)")
-                    recommendations.append("Activated carbon filtration recommended")
-                
-                if turbidity > 1:
-                    warnings.append(f"Turbidity ({turbidity:.2f} NTU) exceeds WHO limit (1 NTU)")
-                    recommendations.append("Filtration or coagulation treatment needed")
-                
-                if trihalomethanes > 100:
-                    warnings.append(f"Trihalomethanes ({trihalomethanes:.2f} μg/L) exceed WHO limit (100 μg/L)")
-                    recommendations.append("Activated carbon treatment recommended")
-                
-                recommendation_text = "; ".join(recommendations) if recommendations else "Water parameters are within acceptable ranges"
-                
-                return {
-                    'success': True,
-                    'prediction': {
-                        'potability_score': float(prediction),
-                        'is_potable': bool(prediction > 0.5),
-                        'confidence': float(prediction if prediction > 0.5 else 1 - prediction),
-                        'risk_level': get_risk_level(prediction),  # FIXED: Added missing risk_level
-                        'status': 'POTABLE' if prediction > 0.5 else 'NOT POTABLE'
-                    },
-                    'recommendation': recommendation_text,
-                    'warnings': warnings,
-                    'model_info': {
-                        'model_type': 'Random Forest',
-                        'standardization_used': scaler is not None
-                    }
+            model, scaler = load_model_once()
+            
+            if model is None:
+                raise Exception("No model available")
+            
+            # Create DataFrame with proper feature names to avoid warnings
+            input_data = pd.DataFrame({
+                'ph': [ph],
+                'hardness': [hardness], 
+                'solids': [solids],
+                'chloramines': [chloramines],
+                'sulfate': [sulfate],
+                'conductivity': [conductivity],
+                'organic_carbon': [organic_carbon],
+                'trihalomethanes': [trihalomethanes],
+                'turbidity': [turbidity]
+            })
+            
+            # Apply scaling if available
+            if scaler is not None:
+                # Convert to numpy array for scaler, then back to DataFrame
+                scaled_data = scaler.transform(input_data.values)
+                input_data = pd.DataFrame(scaled_data, columns=FEATURE_NAMES)
+            
+            # Make prediction with proper feature names
+            prediction = model.predict(input_data)[0]
+            prediction = np.clip(prediction, 0, 1)
+            
+            # Calculate risk level based on prediction score
+            def get_risk_level(score):
+                if score >= 0.8:
+                    return "LOW"
+                elif score >= 0.6:
+                    return "MODERATE" 
+                elif score >= 0.4:
+                    return "HIGH"
+                else:
+                    return "VERY_HIGH"
+            
+            # Generate recommendations and warnings based on parameters
+            recommendations = []
+            warnings_list = []
+            
+            # Parameter validation with WHO/EPA standards
+            param_checks = [
+                (ph, 6.5, 8.5, "pH level", "pH adjustment treatment"),
+                (solids, 0, 1000, "Total dissolved solids (ppm)", "Reverse osmosis or distillation"),
+                (chloramines, 0, 5, "Chloramines level (ppm)", "Activated carbon filtration"),
+                (turbidity, 0, 1, "Turbidity (NTU)", "Filtration or coagulation treatment"),
+                (trihalomethanes, 0, 100, "Trihalomethanes (μg/L)", "Activated carbon treatment"),
+                (sulfate, 0, 250, "Sulfate (mg/L)", "Ion exchange treatment"),
+                (hardness, 0, 120, "Water hardness (mg/L)", "Water softening treatment")
+            ]
+            
+            for value, min_val, max_val, param_name, treatment in param_checks:
+                if value < min_val or value > max_val:
+                    warnings_list.append(f"{param_name} ({value:.2f}) is outside optimal range ({min_val}-{max_val})")
+                    recommendations.append(treatment)
+            
+            # Remove duplicates from recommendations
+            recommendations = list(set(recommendations))
+            recommendation_text = "; ".join(recommendations) if recommendations else "Water parameters are within acceptable ranges"
+            
+            return {
+                'success': True,
+                'prediction': {
+                    'potability_score': float(prediction),
+                    'is_potable': bool(prediction > 0.5),
+                    'confidence': float(prediction if prediction > 0.5 else 1 - prediction),
+                    'risk_level': get_risk_level(prediction),
+                    'status': 'POTABLE' if prediction > 0.5 else 'NOT POTABLE'
+                },
+                'recommendation': recommendation_text,
+                'warnings': warnings_list,
+                'model_info': {
+                    'model_type': type(model).__name__ if model else 'Unknown',
+                    'standardization_used': scaler is not None,
+                    'feature_names_used': True
                 }
-            else:
-                raise Exception("No model file found")
-                
+            }
+            
         except Exception as e:
             return {
                 'success': False,
@@ -117,21 +166,28 @@ app = FastAPI(
     title="Water Potability Prediction API",
     description="AI-powered water quality assessment API using machine learning to predict water potability based on chemical and physical parameters",
     version="1.0.0",
-    docs_url="/docs",  # Swagger UI URL
+    docs_url="/docs",
     redoc_url="/redoc"
 )
 
-# Add CORS middleware (MANDATORY REQUIREMENT)
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# ================== NEW CODE ==================
-# Updated response models
+# Load model at startup
+@app.on_event("startup")
+async def startup_event():
+    """Load model and scaler at application startup"""
+    print("🚀 Starting Water Potability Prediction API...")
+    load_model_once()
+    print("✅ API startup complete")
+
+# Response models
 class PredictionOutput(BaseModel):
     potability_score: float = Field(..., ge=0.0, le=1.0, description="Prediction score between 0-1")
     is_potable: bool = Field(..., description="Whether water is safe to drink")
@@ -140,8 +196,9 @@ class PredictionOutput(BaseModel):
     status: str = Field(..., description="POTABLE or NOT POTABLE")
 
 class ModelInfo(BaseModel):
-    model_type: str = Field(default="Random Forest", description="Type of ML model used")
+    model_type: str = Field(default="RandomForestRegressor", description="Type of ML model used")
     standardization_used: bool = Field(default=False, description="Whether features were standardized")
+    feature_names_used: bool = Field(default=True, description="Whether proper feature names were used")
 
 class PredictionResponse(BaseModel):
     success: bool
@@ -152,134 +209,34 @@ class PredictionResponse(BaseModel):
     error: Optional[str] = None
     details: Optional[List[str]] = None
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
-# ================== END NEW CODE ==================
 
-# Pydantic BaseModel for input validation with data types and range constraints
+# Input validation model
 class WaterQualityInput(BaseModel):
-    """
-    Water Quality Input Model with enforced data types and range constraints
-    All parameters are based on WHO and EPA standards for water quality
-    """
+    """Water Quality Input Model with enforced data types and range constraints"""
     
-    ph: float = Field(
-        ...,
-        ge=0.0,
-        le=14.0,
-        description="pH level of water (0-14, optimal: 6.5-8.5)"
-    )
+    ph: float = Field(..., ge=0.0, le=14.0, description="pH level of water (0-14, optimal: 6.5-8.5)")
+    hardness: float = Field(..., ge=0.0, le=500.0, description="Water hardness in mg/L (0-500, soft: <60, hard: >120)")
+    solids: float = Field(..., ge=0.0, le=50000.0, description="Total dissolved solids in ppm (0-50000, WHO limit: <1000)")
+    chloramines: float = Field(..., ge=0.0, le=15.0, description="Chloramines amount in ppm (0-15, WHO limit: <5)")
+    sulfate: float = Field(..., ge=0.0, le=500.0, description="Sulfate amount in mg/L (0-500, WHO limit: <250)")
+    conductivity: float = Field(..., ge=0.0, le=2000.0, description="Electrical conductivity in μS/cm (0-2000, typical: 50-1500)")
+    organic_carbon: float = Field(..., ge=0.0, le=30.0, description="Organic carbon amount in ppm (0-30, typical: <2)")
+    trihalomethanes: float = Field(..., ge=0.0, le=200.0, description="Trihalomethanes amount in μg/L (0-200, WHO limit: <100)")
+    turbidity: float = Field(..., ge=0.0, le=10.0, description="Turbidity level in NTU (0-10, WHO limit: <1)")
     
-    hardness: float = Field(
-        ...,
-        ge=0.0,
-        le=500.0,
-        description="Water hardness in mg/L (0-500, soft: <60, hard: >120)"
-    )
-    
-    solids: float = Field(
-        ...,
-        ge=0.0,
-        le=50000.0,
-        description="Total dissolved solids in ppm (0-50000, WHO limit: <1000)"
-    )
-    
-    chloramines: float = Field(
-        ...,
-        ge=0.0,
-        le=15.0,
-        description="Chloramines amount in ppm (0-15, WHO limit: <5)"
-    )
-    
-    sulfate: float = Field(
-        ...,
-        ge=0.0,
-        le=500.0,
-        description="Sulfate amount in mg/L (0-500, WHO limit: <250)"
-    )
-    
-    conductivity: float = Field(
-        ...,
-        ge=0.0,
-        le=2000.0,
-        description="Electrical conductivity in μS/cm (0-2000, typical: 50-1500)"
-    )
-    
-    organic_carbon: float = Field(
-        ...,
-        ge=0.0,
-        le=30.0,
-        description="Organic carbon amount in ppm (0-30, typical: <2)"
-    )
-    
-    trihalomethanes: float = Field(
-        ...,
-        ge=0.0,
-        le=200.0,
-        description="Trihalomethanes amount in μg/L (0-200, WHO limit: <100)"
-    )
-    
-    turbidity: float = Field(
-        ...,
-        ge=0.0,
-        le=10.0,
-        description="Turbidity level in NTU (0-10, WHO limit: <1)"
-    )
-    
-    # Custom validators for additional constraints
     @validator('ph')
     def validate_ph(cls, v):
         if not (0.0 <= v <= 14.0):
             raise ValueError('pH must be between 0 and 14')
         return v
     
-    @validator('hardness')
-    def validate_hardness(cls, v):
+    @validator('hardness', 'solids', 'chloramines', 'sulfate', 'conductivity', 'organic_carbon', 'trihalomethanes', 'turbidity')
+    def validate_non_negative(cls, v):
         if v < 0:
-            raise ValueError('Hardness cannot be negative')
-        return v
-    
-    @validator('solids')
-    def validate_solids(cls, v):
-        if v < 0:
-            raise ValueError('Total dissolved solids cannot be negative')
-        return v
-    
-    @validator('chloramines')
-    def validate_chloramines(cls, v):
-        if v < 0:
-            raise ValueError('Chloramines cannot be negative')
-        return v
-    
-    @validator('sulfate')
-    def validate_sulfate(cls, v):
-        if v < 0:
-            raise ValueError('Sulfate cannot be negative')
-        return v
-    
-    @validator('conductivity')
-    def validate_conductivity(cls, v):
-        if v < 0:
-            raise ValueError('Conductivity cannot be negative')
-        return v
-    
-    @validator('organic_carbon')
-    def validate_organic_carbon(cls, v):
-        if v < 0:
-            raise ValueError('Organic carbon cannot be negative')
-        return v
-    
-    @validator('trihalomethanes')
-    def validate_trihalomethanes(cls, v):
-        if v < 0:
-            raise ValueError('Trihalomethanes cannot be negative')
-        return v
-    
-    @validator('turbidity')
-    def validate_turbidity(cls, v):
-        if v < 0:
-            raise ValueError('Turbidity cannot be negative')
+            raise ValueError('Value cannot be negative')
         return v
 
-# Health check endpoint
+# API Endpoints
 @app.get("/")
 async def root():
     """Root endpoint for health check"""
@@ -288,32 +245,26 @@ async def root():
         "status": "active",
         "version": "1.0.0",
         "docs_url": "/docs",
-        "health_check": "OK"
+        "health_check": "OK",
+        "model_loaded": model_loaded
     }
 
-# Health check endpoint
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "Water Potability Prediction API"
+        "service": "Water Potability Prediction API",
+        "model_status": "loaded" if model_loaded else "not_loaded"
     }
 
-# Main prediction endpoint (POST request as required)
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_water_potability(input_data: WaterQualityInput):
-    """
-    Predict water potability based on water quality parameters
-    
-    This endpoint uses the best-performing model from Task 1 to predict
-    whether water is safe for human consumption based on 9 chemical and
-    physical parameters.
-    """
+    """Predict water potability based on water quality parameters"""
     
     try:
-        # Make prediction using the best model from Task 1
+        # Make prediction using enhanced fallback function
         result = predict_water_potability_api(
             ph=input_data.ph,
             hardness=input_data.hardness,
@@ -348,15 +299,9 @@ async def predict_water_potability(input_data: WaterQualityInput):
             details=["Prediction processing failed"]
         )
 
-# Batch prediction endpoint (bonus feature)
 @app.post("/predict/batch")
 async def predict_batch(input_list: list[WaterQualityInput]):
-    """
-    Predict water potability for multiple samples
-    
-    This endpoint allows batch processing of multiple water samples
-    for efficiency in processing large datasets.
-    """
+    """Predict water potability for multiple samples"""
     
     try:
         results = []
@@ -390,15 +335,34 @@ async def predict_batch(input_list: list[WaterQualityInput]):
             detail=f"Batch prediction failed: {str(e)}"
         )
 
-# Model information endpoint
 @app.get("/model/info")
 async def get_model_info():
     """Get information about the loaded model"""
     
     try:
-        # Try to get model info from predictor
-        predictor = WaterPotabilityPredictor()
-        model_info = predictor.get_model_info()
+        model, scaler = load_model_once()
+        
+        if model is not None:
+            model_info = {
+                "model_type": type(model).__name__,
+                "model_loaded": True,
+                "scaler_available": scaler is not None,
+                "feature_names": FEATURE_NAMES,
+                "n_features": len(FEATURE_NAMES)
+            }
+            
+            # Add model-specific info if available
+            if hasattr(model, 'n_estimators'):
+                model_info['n_estimators'] = model.n_estimators
+            if hasattr(model, 'max_depth'):
+                model_info['max_depth'] = model.max_depth
+                
+        else:
+            model_info = {
+                "model_type": "None",
+                "model_loaded": False,
+                "error": "Model not available"
+            }
         
         return {
             "success": True,
@@ -413,7 +377,6 @@ async def get_model_info():
             "timestamp": datetime.now().isoformat()
         }
 
-# Parameters information endpoint
 @app.get("/parameters/info")
 async def get_parameters_info():
     """Get information about water quality parameters and their acceptable ranges"""
@@ -491,7 +454,6 @@ async def get_parameters_info():
         "timestamp": datetime.now().isoformat()
     }
 
-# Example usage endpoint
 @app.get("/example")
 async def get_example():
     """Get example input data for testing the API"""
@@ -515,15 +477,14 @@ async def get_example():
         "timestamp": datetime.now().isoformat()
     }
 
-# Main entry point for running the server
+# Main entry point
 if __name__ == "__main__":
-    # Configuration for deployment
     port = int(os.environ.get("PORT", 8000))
     
     uvicorn.run(
-        "prediction:app",  # module:app
+        "prediction:app",
         host="0.0.0.0",
         port=port,
-        reload=False,  # Set to False for production
+        reload=False,
         access_log=True
     )
