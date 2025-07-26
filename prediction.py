@@ -1,5 +1,6 @@
 # This API uses the best-performing model from Task 1 to make water potability predictions
 # Ready for deployment on Render with public URL and Swagger UI
+#This is updates
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
