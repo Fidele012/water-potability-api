@@ -6,12 +6,4 @@ numpy
 pandas
 scikit-learn
 joblib
-=======
-fastapi
-pydantic
-uvicorn[standard]
-numpy
-pandas
-scikit-learn
-joblib
 >>>>>>> 2628288cf6a61e67f56d1ea3b487aaab5ee35b93
