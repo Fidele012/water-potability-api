@@ -1,0 +1,11 @@
+# Standard line ending configuration
+* text=auto
+
+# Force LF for specific file types
+*.py text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+
+# Binary files that shouldn't be modified
+*.png binary
+*.jpg binary
